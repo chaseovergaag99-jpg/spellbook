@@ -14,6 +14,8 @@ GitHub Pages, Netlify, Cloudflare Pages, Vercel and similar.
 - **Decks**: multiple decks with a format; Commander / Main / Sideboard; counts; mana curve; color breakdown;
   deck price; "need N" flags for cards you don't own, plus a shopping list; plain-text import/export (`4 Lightning Bolt`).
 - **Backup**: export/import the full state as JSON (Settings).
+- **Accounts & cloud sync (optional, Supabase)**: email/password sign-up and sign-in, magic link, optional Google,
+  password reset, and sign-out. Data stays local-first and syncs automatically across devices. Turned off until `js/config.js` has keys.
 - **Offline**: the service worker caches the app shell, card images and (after first use) the OCR engine.
 
 Prices are Scryfall's `prices.usd` / `prices.usd_foil`, which are **TCGplayer market prices**,
@@ -41,6 +43,50 @@ Upload the folder as-is. Every path is relative, so it also works from a sub-pat
 
 Then on the phone: **iPhone Safari** → Share → *Add to Home Screen*. **Android Chrome** → ⋮ → *Install app*.
 
+## Cloud sync setup (Supabase)
+
+With `SUPABASE_URL` / `SUPABASE_ANON_KEY` empty in `js/config.js`, the app is purely local and never loads supabase-js.
+To turn on accounts and sync:
+
+1. **Create a project** at https://supabase.com (the free tier is fine).
+2. **Create the tables**: open SQL Editor → New query, paste [`supabase/schema.sql`](supabase/schema.sql) and run it. It's safe to re-run.
+   This creates `collection_items` and `decks` with Row Level Security (each user can only select, insert, update or delete their own rows),
+   a last-write-wins trigger, and soft-delete columns.
+3. **Get your keys**: Project Settings → API (or *Connect*). Copy the **Project URL** and the **anon / publishable** key into `js/config.js`.
+   The anon key is meant to be public; never put the `service_role` / secret key in the app.
+4. **Set the auth URLs**: Authentication → URL Configuration
+   - **Site URL**: `https://chaseovergaag99-jpg.github.io/spellbook/`
+   - **Redirect URLs**: add `https://chaseovergaag99-jpg.github.io/spellbook/` and `https://chaseovergaag99-jpg.github.io/spellbook/**`
+     (and `http://localhost:8080/` if you test locally).
+5. **Email sign-in**: Authentication → Sign In / Providers → Email is enabled by default.
+   - *Confirm email* ON (the default) means new users must click the link in their email before signing in. The app tells them this.
+   - Supabase's built-in email sender is heavily rate-limited (a few emails per hour). For real use, set up custom SMTP under Authentication → Emails → SMTP settings.
+   - Magic links and password reset use the same email templates. You can hide the magic-link button with `ENABLE_MAGIC_LINK = false`.
+6. **Google sign-in (optional)**:
+   - In Google Cloud Console, create an OAuth client (Web application) and add Supabase's callback URL
+     (`https://<project-ref>.supabase.co/auth/v1/callback`) as an authorized redirect URI.
+   - In Supabase → Authentication → Providers → Google, paste the client ID and secret and enable it.
+   - Set `ENABLE_GOOGLE_AUTH = true` in `js/config.js`.
+7. **Deploy**: commit `js/config.js`, push, and hard-refresh the app once.
+
+### How sync works
+
+- IndexedDB on the device is always the source of truth. The app works fully offline and signed out.
+- Every collection entry and deck has an `updated` timestamp. Deletions leave a tombstone that syncs as `deleted = true`.
+- A sync is **pull → merge → push**:
+  - It pulls rows changed since the last sync (by the server-set `synced_at`).
+  - It merges them with **last-write-wins per record** (`updated_at`).
+  - It upserts every locally changed record. A database trigger also refuses stale writes, so an older edit can never overwrite a newer one.
+- **First sign-in on a device** queues every local record, so local and cloud data are merged and nothing is lost.
+  Two separately added copies of the same card stay as two rows.
+- **When it syncs**: on app open and sign-in, about 2 s after any edit, when the app comes back online or to the foreground, and every 5 minutes.
+  The status shows in Settings → Account and as a chip at the top of Collection (a sign-in banner shows while signed out).
+- **Signing out** keeps the data on the device by default, or optionally wipes it. Signing back in merges again.
+- Card snapshots (name, set, image, prices) travel with each row, so a new device can show everything without hitting Scryfall.
+  Prices refresh per device with *Refresh prices*.
+- **Tables**: `collection_items(user_id, id, card_id, card, qty, foil, condition, added_at, deleted, updated_at, synced_at)` and
+  `decks(user_id, id, name, format, cards, card_data, created_at, deleted, updated_at, synced_at)`, both keyed by `(user_id, id)`.
+
 ## Project layout
 
 ```
@@ -57,12 +103,18 @@ js/
   cardsheet.js        Shared card detail sheet (printing picker, foil, qty, condition, add to collection/deck)
   sorting.js          Sort comparators + filters
   decklist.js         Plain-text decklist parser/formatter
+  config.js           Supabase URL / anon key / auth feature flags (empty = local-only)
+  sync.js             Supabase auth + sync engine (lazy-loads vendor/supabase.js)
+  synccore.js         Pure merge logic: rows ↔ local state, last-write-wins, tombstones (unit-tested)
   ocr.js              Tesseract.js wrapper: lazy load, image preprocessing, title cleanup
   names.js            Local fuzzy matching against Scryfall's card-name catalog (for OCR results)
   views/
     search.js  scanner.js  collection.js  decks.js  settings.js
+    account.js        Account panel, sign-in banner, sync status chip, password sheet
 vendor/tesseract/     Tesseract.js v7 + WASM core + English model (loaded only when scanning)
-dev/                  Playwright end-to-end test, icon generator, sample card images
+vendor/supabase.js    supabase-js v2 UMD build (loaded only when sync is configured)
+supabase/schema.sql   Database schema + RLS policies for cloud sync
+dev/                  Tests (e2e, sync e2e, sync unit), local Supabase mock, icon generator, sample card images
 screenshots/          Phone-size screenshots
 ```
 
@@ -73,11 +125,15 @@ screenshots/          Phone-size screenshots
   cards:      { [scryfallId]: SlimCard },   // shared cache; prices live here, plus `prev` prices from the last refresh
   collection: [{ uid, cardId, qty, foil, condition, added }],
   decks:      [{ id, name, format, created, updated, cards: [{ cardId, qty, section: 'main'|'side'|'commander' }] }],
-  meta:       { lastRefresh, lastRefreshTotal }
+  meta:       { lastRefresh, lastRefreshTotal },
+  tombstones: { collection: { [uid]: deletedAt }, decks: { [id]: deletedAt } },          // sync bookkeeping
+  sync:       { userId, cursor: { collection_items, decks }, dirty: { collection: {}, decks: {} } }
 }
 ```
 
 Views re-render through `store.subscribe()` whenever a mutation calls `store.save()`.
+Mutations must timestamp records so they sync: use the store helpers (`addToCollection`, `updateEntry`, `removeEntry`,
+`createDeck`, `updateDeck`, `addToDeck`, …), or call `touchEntry(e)` / `touchDeck(d)` before `save()`.
 
 ### Common changes
 
@@ -87,6 +143,8 @@ Views re-render through `store.subscribe()` whenever a mutation calls `store.sav
 - **Add a format**: edit `FORMATS` in `js/store.js` (deck-size targets are in `TARGET` in `views/decks.js`).
 - **Tune the scanner**: the guide box position is `.scan-guide .title-box` in CSS. Crop insets and the match threshold (0.62)
   are in `views/scanner.js`. Image preprocessing is in `ocr.preprocess()`.
+- **Sync another kind of record**: add a table to `schema.sql` (same columns, trigger and policies), add row converters plus an
+  `applyRemote` branch in `synccore.js`, and add it to `TABLES`.
 - **After changing shell files**, bump `VERSION` in `sw.js` so installed apps update. If you add a JS file, also add it to `SHELL_FILES`.
 
 ## How the scanner works
@@ -104,8 +162,22 @@ OCR reads the **name only**. The suggested printing is Scryfall's default, so pi
 
 ```bash
 cd dev && npm i && npx playwright install chromium
-(cd .. && python3 -m http.server 8080 &)  
-node e2e-test.mjs
+(cd .. && python3 -m http.server 8080 &)
+node e2e-test.mjs          # full app, local-only mode (empty config)
+node sync-unit-test.mjs    # merge logic, no browser or network needed
+```
+
+**Sync end-to-end against a local Supabase stand-in.** This uses real Postgres and PostgREST with the real `schema.sql` and RLS, plus a fake auth server:
+
+```bash
+sudo apt-get install -y postgresql && sudo pg_ctlcluster 17 main start
+sudo -u postgres psql -c "create database spellbook"
+sudo -u postgres psql -d spellbook -f supabase-mock/bootstrap.sql
+sudo -u postgres psql -d spellbook -f ../supabase/schema.sql
+sudo -u postgres psql -d spellbook -f supabase-mock/rls-test.sql     # RLS / trigger checks
+# download a PostgREST binary from https://github.com/PostgREST/postgrest/releases, then (from dev/):
+npm i pg && node supabase-mock/server.mjs ./postgrest > /tmp/mock.log &
+node sync-e2e.mjs          # two simulated devices + a second user
 ```
 
 The test runs at an iPhone 13 viewport against live Scryfall. It feeds a fake camera stream (a card image drawn on a canvas)

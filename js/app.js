@@ -13,6 +13,9 @@ import * as scanner from './views/scanner.js';
 import * as collection from './views/collection.js';
 import * as decks from './views/decks.js';
 import * as settings from './views/settings.js';
+import * as sync from './sync.js';
+import { passwordSheet } from './views/account.js';
+import { toast } from './ui.js';
 
 const VIEWS = { search, scan: scanner, collection, decks, settings };
 let active = 'search';
@@ -35,7 +38,26 @@ async function init() {
   $$('.tab').forEach((t) => t.addEventListener('click', () => show(t.dataset.tab)));
   // Re-render the visible view whenever state changes (cheap: views are small).
   store.subscribe(() => VIEWS[active].render?.());
-  show(location.hash.slice(1) || 'search');
+  // [data-goto="tab"] links anywhere switch tabs.
+  document.addEventListener('click', (e) => {
+    const g = e.target.closest('[data-goto]');
+    if (g) { e.preventDefault(); show(g.dataset.goto); }
+  });
+
+  // Auth redirects can land with an error in the hash (e.g. expired link).
+  const hash = location.hash.slice(1);
+  if (hash.includes('=')) {
+    const p = new URLSearchParams(hash);
+    if (p.get('error_description')) toast(p.get('error_description').replace(/\+/g, ' '), 6000);
+    show('settings');
+  } else show(hash || 'search');
+
+  // Cloud sync (no-op unless configured in js/config.js).
+  sync.onStatus(() => {
+    collection.renderSync?.();
+    if (active === 'settings') settings.render();
+  });
+  sync.init({ onPasswordRecovery: () => { show('settings'); passwordSheet(); } });
 }
 
 // Remember the Android/desktop install prompt so Settings can offer a button.

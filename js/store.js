@@ -8,8 +8,14 @@
  *   collection: [ { uid, cardId, qty, foil, condition, added } ],
  *   decks: [ { id, name, format, created, updated,
  *              cards: [ { cardId, qty, section: 'main'|'side'|'commander' } ] } ],
- *   meta: { lastRefresh: ISOString|null, lastRefreshTotal: number|null }
+ *   meta: { lastRefresh: ISOString|null, lastRefreshTotal: number|null },
+ *   // --- cloud sync bookkeeping (see sync.js / synccore.js) ---
+ *   tombstones: { collection: { [uid]: deletedAtISO }, decks: { [id]: deletedAtISO } },
+ *   sync: { userId, cursor: { collection_items, decks }, dirty: { collection: { [uid]: updatedISO }, decks: { [id]: updatedISO } } }
  * }
+ * Collection entries and decks carry an `updated` ISO timestamp used for
+ * last-write-wins merging. Mutations must call touchEntry()/touchDeck() (the
+ * helpers below do) so the change is timestamped and queued for sync.
  *
  * SlimCard is produced by scryfall.slim() — see that file for fields.
  * Every mutation should go through the helpers below (or call save()) so the
@@ -26,7 +32,14 @@ export const state = {
   collection: [],
   decks: [],
   meta: { lastRefresh: null, lastRefreshTotal: null },
+  tombstones: { collection: {}, decks: {} },
+  sync: emptySync(),
 };
+
+export function emptySync() {
+  return { userId: null, cursor: { collection_items: null, decks: null }, dirty: { collection: {}, decks: {} } };
+}
+const now = () => new Date().toISOString();
 
 /* ---------- IndexedDB key/value helpers ---------- */
 function openDB() {
@@ -84,12 +97,53 @@ export async function flush() {
 window.addEventListener('pagehide', flush);
 document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && flush());
 
+/**
+ * Replace the whole state (backup import "replace", "delete all data").
+ * With persist=true this is a user action: records that disappear get
+ * tombstones and everything new is marked dirty so the change syncs.
+ * Device-local sync bookkeeping (state.sync) is always preserved.
+ */
 export function replaceState(next, persist = true) {
+  const oldCol = state.collection, oldDecks = state.decks;
   state.cards = next.cards || {};
   state.collection = next.collection || [];
   state.decks = next.decks || [];
   state.meta = { lastRefresh: null, lastRefreshTotal: null, ...(next.meta || {}) };
-  if (persist) save();
+  if (!persist) {
+    // Loading from disk: restore bookkeeping as saved.
+    state.tombstones = { collection: {}, decks: {}, ...(next.tombstones || {}) };
+    state.sync = { ...emptySync(), ...(next.sync || {}) };
+  } else {
+    state.tombstones = { collection: { ...state.tombstones.collection, ...(next.tombstones?.collection || {}) }, decks: { ...state.tombstones.decks, ...(next.tombstones?.decks || {}) } };
+    const keepC = new Set(state.collection.map((e) => e.uid)), keepD = new Set(state.decks.map((d) => d.id));
+    for (const e of oldCol) if (!keepC.has(e.uid)) tombstone('collection', e.uid);
+    for (const d of oldDecks) if (!keepD.has(d.id)) tombstone('decks', d.id);
+    state.collection.forEach((e) => touchEntry(e));
+    state.decks.forEach((d) => touchDeck(d));
+    save();
+  }
+  // Older saves/backups have no `updated` on entries.
+  for (const e of state.collection) e.updated ||= e.added || now();
+  for (const d of state.decks) d.updated ||= d.created || now();
+}
+
+/* ---------- change tracking for sync ---------- */
+/** Timestamp a collection entry and queue it for sync. */
+export function touchEntry(e) {
+  e.updated = now();
+  delete state.tombstones.collection[e.uid];
+  state.sync.dirty.collection[e.uid] = e.updated;
+}
+/** Timestamp a deck and queue it for sync. */
+export function touchDeck(d) {
+  d.updated = now();
+  delete state.tombstones.decks[d.id];
+  state.sync.dirty.decks[d.id] = d.updated;
+}
+function tombstone(kind, id) {
+  const t = now();
+  state.tombstones[kind][id] = t;
+  state.sync.dirty[kind][id] = t;
 }
 
 /* ---------- pub/sub so views re-render on change ---------- */
@@ -124,17 +178,23 @@ export function addToCollection(card, { qty = 1, foil = false, condition = 'NM' 
   upsertCard(card);
   // Merge with an identical existing row (same printing + finish + condition).
   const existing = state.collection.find((e) => e.cardId === card.id && e.foil === foil && e.condition === condition);
-  if (existing) existing.qty += qty;
-  else state.collection.unshift({ uid: uid(), cardId: card.id, qty, foil, condition, added: new Date().toISOString() });
+  if (existing) { existing.qty += qty; touchEntry(existing); }
+  else {
+    const e = { uid: uid(), cardId: card.id, qty, foil, condition, added: now() };
+    state.collection.unshift(e); touchEntry(e);
+  }
   save();
 }
 export function updateEntry(entryUid, patch) {
   const e = state.collection.find((x) => x.uid === entryUid);
-  if (e) Object.assign(e, patch);
-  if (e && e.qty <= 0) removeEntry(entryUid); else save();
+  if (!e) return;
+  Object.assign(e, patch);
+  if (e.qty <= 0) return removeEntry(entryUid);
+  touchEntry(e); save();
 }
 export function removeEntry(entryUid) {
   state.collection = state.collection.filter((x) => x.uid !== entryUid);
+  tombstone('collection', entryUid);
   save();
 }
 /** How many copies of a card *name* the user owns (any printing). */
@@ -157,20 +217,22 @@ export function collectionValue() {
 /* ----- decks ----- */
 export const FORMATS = ['Commander', 'Standard', 'Modern', 'Pioneer', 'Legacy', 'Vintage', 'Pauper', 'Brawl', 'Historic', 'Limited', 'Casual'];
 export function createDeck(name, format) {
-  const d = { id: uid(), name: name || 'New Deck', format: format || 'Commander', created: new Date().toISOString(), updated: new Date().toISOString(), cards: [] };
-  state.decks.unshift(d);
+  const d = { id: uid(), name: name || 'New Deck', format: format || 'Commander', created: now(), updated: now(), cards: [] };
+  state.decks.unshift(d); touchDeck(d);
   save();
   return d;
 }
 export function getDeck(id) { return state.decks.find((d) => d.id === id); }
-export function deleteDeck(id) { state.decks = state.decks.filter((d) => d.id !== id); save(); }
+export function deleteDeck(id) { state.decks = state.decks.filter((d) => d.id !== id); tombstone('decks', id); save(); }
+/** Apply a change to a deck (rename, format, card list...) and persist it. */
+export function updateDeck(id, fn) { const d = getDeck(id); if (!d) return; fn(d); touchDeck(d); save(); }
 export function addToDeck(deckId, card, { qty = 1, section = 'main' } = {}) {
   const d = getDeck(deckId); if (!d) return;
   upsertCard(card);
   // Merge by name+section so different printings of the same card stack.
   const ex = d.cards.find((c) => c.section === section && (c.cardId === card.id || state.cards[c.cardId]?.name === card.name));
   if (ex) ex.qty += qty; else d.cards.push({ cardId: card.id, qty, section });
-  d.updated = new Date().toISOString();
+  touchDeck(d);
   save();
 }
 export function setDeckCardQty(deckId, cardId, section, qty) {
@@ -179,7 +241,7 @@ export function setDeckCardQty(deckId, cardId, section, qty) {
   if (!c) return;
   c.qty = qty;
   if (qty <= 0) d.cards = d.cards.filter((x) => x !== c);
-  d.updated = new Date().toISOString();
+  touchDeck(d);
   save();
 }
 export function moveDeckCard(deckId, cardId, from, to) {
@@ -188,6 +250,7 @@ export function moveDeckCard(deckId, cardId, from, to) {
   if (!c) return;
   const target = d.cards.find((x) => x.cardId === cardId && x.section === to);
   if (target) { target.qty += c.qty; d.cards = d.cards.filter((x) => x !== c); } else c.section = to;
+  touchDeck(d);
   save();
 }
 

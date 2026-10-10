@@ -7,6 +7,7 @@ import * as sf from '../scryfall.js';
 import { $, esc, money, priceStr, deltaHtml, timeAgo, toast, COLOR_VAR } from '../ui.js';
 import { SORTS, applySortFilter } from '../sorting.js';
 import { openCardSheet } from '../cardsheet.js';
+import * as account from './account.js';
 
 const PREFS_KEY = 'spellbook:collectionPrefs';
 const prefs = { sort: 'added', dir: -1, text: '', colors: [], rarities: [], layout: 'list', ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') };
@@ -19,6 +20,7 @@ export function mount(root) {
   el.innerHTML = `
     <div class="view-header"><h1>Collection</h1>
       <button class="btn small" id="c-refresh">↻ Refresh prices</button></div>
+    <div id="c-sync"></div>
     <div class="summary" id="c-summary"></div>
     <div class="small muted" id="c-updated" style="margin:-2px 2px 10px"></div>
     <div class="row">
@@ -73,12 +75,21 @@ export function render() {
     <div class="stat"><div class="k">Unique</div><div class="v">${collection.length.toLocaleString()}</div></div>
     <div class="stat"><div class="k">Value</div><div class="v price">${money(total)}</div><div>${deltaHtml(delta)}</div></div>`;
   $('#c-updated', el).textContent = `Prices updated ${timeAgo(meta.lastRefresh)} · TCGplayer market via Scryfall`;
+  renderSync();
   $('#c-sort', el).value = prefs.sort;
   $('#c-dir', el).textContent = prefs.dir === 1 ? '↑' : '↓';
   $('#c-layout', el).textContent = prefs.layout === 'list' ? '▦' : '☰';
   el.querySelectorAll('[data-color]').forEach((b) => b.classList.toggle('on', prefs.colors.includes(b.dataset.color)));
   el.querySelectorAll('[data-rarity]').forEach((b) => b.classList.toggle('on', prefs.rarities.includes(b.dataset.rarity)));
   renderList();
+}
+
+/** Sync chip / sign-in banner (also called directly on sync status changes). */
+export function renderSync() {
+  if (!el) return;
+  const box = $('#c-sync', el);
+  box.innerHTML = account.chipHtml();
+  account.wireChip(box);
 }
 
 function renderList() {

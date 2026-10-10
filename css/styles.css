@@ -93,7 +93,7 @@ h3 { font-size: 1rem; }
 .btn[disabled] { opacity: .5; pointer-events: none; }
 .icon-btn { width: var(--tap); padding: 0; }
 
-input[type=text], input[type=search], input[type=number], select, textarea {
+input[type=text], input[type=search], input[type=number], input[type=email], input[type=password], select, textarea {
   width: 100%; min-height: var(--tap); padding: 10px 14px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--bg-2); color: var(--text);
   font: inherit; font-size: 16px; /* 16px prevents iOS zoom on focus */

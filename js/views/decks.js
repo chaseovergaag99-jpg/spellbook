@@ -148,8 +148,8 @@ function renderDeck(deck) {
     <div id="d-cards">${sectionsHtml(deck, s)}</div>`;
 
   $('#d-back', el).onclick = () => { openId = null; render(); };
-  $('#d-name', el).onclick = () => { const n = prompt('Rename deck', deck.name); if (n) { deck.name = n; store.save(); } };
-  $('#d-format', el).onchange = (e) => { deck.format = e.target.value; store.save(); };
+  $('#d-name', el).onclick = () => { const n = prompt('Rename deck', deck.name); if (n) store.updateDeck(deck.id, (d) => (d.name = n)); };
+  $('#d-format', el).onchange = (e) => store.updateDeck(deck.id, (d) => (d.format = e.target.value));
   $('#d-menu', el).onclick = () => deckMenu(deck);
   $('#d-sec', el).onclick = (e) => { const b = e.target.closest('[data-sec]'); if (b) { addSection = b.dataset.sec; render(); } };
   $('#d-from-col', el).onclick = () => pickFromCollection(deck);
@@ -240,7 +240,7 @@ function deckMenu(deck) {
   root.querySelector('#dm-addmissing').onclick = () => missingSheet(deck);
   root.querySelector('#dm-dup').onclick = () => {
     const d = store.createDeck(deck.name + ' (copy)', deck.format);
-    d.cards = JSON.parse(JSON.stringify(deck.cards)); store.save(); closeSheet(); openDeck(d.id);
+    store.updateDeck(d.id, (x) => (x.cards = JSON.parse(JSON.stringify(deck.cards)))); closeSheet(); openDeck(d.id);
   };
   root.querySelector('#dm-del').onclick = () => { if (confirm(`Delete “${deck.name}”?`)) { store.deleteDeck(deck.id); closeSheet(); openId = null; render(); } };
 }
@@ -298,7 +298,7 @@ export async function importInto(deckId, text, replace) {
       byName.set(c.name.split(' // ')[0].toLowerCase(), c);
     }
     const deck = store.getDeck(deckId);
-    if (replace) deck.cards = [];
+    if (replace) store.updateDeck(deckId, (d) => (d.cards = []));
     let added = 0;
     for (const l of lines) {
       const c = byName.get(l.name.toLowerCase()) || byName.get(l.name.split(' // ')[0].toLowerCase());

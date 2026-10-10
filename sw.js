@@ -5,9 +5,10 @@
  *  - OCR engine (vendor/tesseract/*): cache-first, cached on first scanner use.
  *  - Card images (cards.scryfall.io): cache-first, capped at MAX_IMAGES.
  *  - Scryfall API: always network (prices must be fresh).
+ *  - Supabase (*.supabase.co) and any other cross-origin API: not intercepted.
  * Bump VERSION when you change shell files to force clients to update.
  */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 const IMAGES = 'images-v1';
@@ -16,8 +17,9 @@ const MAX_IMAGES = 600;
 const SHELL_FILES = [
   './', 'index.html', 'manifest.json', 'css/styles.css',
   'js/app.js', 'js/store.js', 'js/scryfall.js', 'js/ui.js', 'js/cardsheet.js', 'js/sorting.js',
-  'js/decklist.js', 'js/ocr.js', 'js/names.js',
+  'js/decklist.js', 'js/ocr.js', 'js/names.js', 'js/config.js', 'js/sync.js', 'js/synccore.js', 'js/views/account.js',
   'js/views/search.js', 'js/views/scanner.js', 'js/views/collection.js', 'js/views/decks.js', 'js/views/settings.js',
+  'vendor/supabase.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/maskable-512.png',
 ];
 
@@ -64,11 +66,10 @@ self.addEventListener('fetch', (e) => {
   // OCR engine → cache first (large, versioned files).
   if (url.pathname.includes('/vendor/')) {
     e.respondWith((async () => {
-      const c = await caches.open(RUNTIME);
-      const hit = await c.match(req);
+      const hit = await caches.match(req); // any cache (supabase.js is precached in the shell)
       if (hit) return hit;
       const res = await fetch(req);
-      if (res.ok) c.put(req, res.clone());
+      if (res.ok) (await caches.open(RUNTIME)).put(req, res.clone());
       return res;
     })());
     return;
