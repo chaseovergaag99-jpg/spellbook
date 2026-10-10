@@ -134,7 +134,7 @@ await D.page.waitForFunction(() => /confirm your email/i.test(document.querySele
 ok(true, 'D: signing in before confirming shows a friendly "confirm your email" message');
 await D.page.goto(BASE + '?code=stale-or-other-browser');
 await D.page.waitForFunction(() => /Email confirmed/.test(document.querySelector('#toast').textContent), null, { timeout: 10000 });
-ok(!location.search && !(await D.page.evaluate(() => location.search)), 'D: landing from a confirm link in another browser → "please sign in" notice, URL cleaned');
+ok(await D.page.evaluate(() => !location.search), 'D: landing from a confirm link in another browser → "please sign in" notice, URL cleaned');
 await D.page.goto(BASE + '?error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired');
 await D.page.waitForFunction(() => /expired/.test(document.querySelector('#toast').textContent), null, { timeout: 10000 });
 ok(await D.page.evaluate(() => !location.search), 'D: expired-link error shown as a toast, URL cleaned');

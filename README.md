@@ -45,21 +45,27 @@ Then on the phone: **iPhone Safari** → Share → *Add to Home Screen*. **Andro
 
 ## Cloud sync setup (Supabase)
 
-With `SUPABASE_URL` / `SUPABASE_ANON_KEY` empty in `js/config.js`, the app is purely local and never loads supabase-js.
-To turn on accounts and sync:
+This copy is configured for project `wjuqqxstoxfgnmpardyp` (publishable key in `js/config.js`).
+If `SUPABASE_URL` / `SUPABASE_ANON_KEY` are emptied, the app is purely local and never loads supabase-js.
+Setup steps for a project:
 
 1. **Create a project** at https://supabase.com (the free tier is fine).
 2. **Create the tables**: open SQL Editor → New query, paste [`supabase/schema.sql`](supabase/schema.sql) and run it. It's safe to re-run.
    This creates `collection_items` and `decks` with Row Level Security (each user can only select, insert, update or delete their own rows),
    a last-write-wins trigger, and soft-delete columns.
-3. **Get your keys**: Project Settings → API (or *Connect*). Copy the **Project URL** and the **anon / publishable** key into `js/config.js`.
+3. **Get your keys**: Project Settings → API Keys (or *Connect*). Copy the **Project URL** and the **publishable** key (`sb_publishable_…`, or the legacy `anon` JWT) into `js/config.js`.
    The anon key is meant to be public; never put the `service_role` / secret key in the app.
 4. **Set the auth URLs**: Authentication → URL Configuration
    - **Site URL**: `https://chaseovergaag99-jpg.github.io/spellbook/`
    - **Redirect URLs**: add `https://chaseovergaag99-jpg.github.io/spellbook/` and `https://chaseovergaag99-jpg.github.io/spellbook/**`
      (and `http://localhost:8080/` if you test locally).
 5. **Email sign-in**: Authentication → Sign In / Providers → Email is enabled by default.
-   - *Confirm email* ON (the default) means new users must click the link in their email before signing in. The app tells them this.
+   - *Confirm email* ON (the default) means new users must click the link in their email before signing in. The app handles this:
+     - After sign-up it shows a "check your inbox" screen with a *Resend confirmation email* button.
+     - Signing in before confirming shows a friendly message plus the resend option.
+     - The link returns to the page the user signed up from (`emailRedirectTo` = current page URL) and signs them in.
+     - If the link is opened in a different browser or app, the email still gets confirmed, and the app asks them to sign in.
+     - Expired or invalid links show a toast.
    - Supabase's built-in email sender is heavily rate-limited (a few emails per hour). For real use, set up custom SMTP under Authentication → Emails → SMTP settings.
    - Magic links and password reset use the same email templates. You can hide the magic-link button with `ENABLE_MAGIC_LINK = false`.
 6. **Google sign-in (optional)**:

@@ -1,5 +1,7 @@
 -- RLS / trigger checks for supabase/schema.sql (run against the mock DB).
 \set ON_ERROR_STOP 0
+-- ON_ERROR_ROLLBACK: expected failures below must not abort the transaction
+\set ON_ERROR_ROLLBACK on
 begin;  -- everything below is rolled back, so the test can be re-run
 insert into auth.users values ('11111111-1111-1111-1111-111111111111','a@test','x'), ('22222222-2222-2222-2222-222222222222','b@test','x');
 
