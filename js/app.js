@@ -44,20 +44,28 @@ async function init() {
     if (g) { e.preventDefault(); show(g.dataset.goto); }
   });
 
-  // Auth redirects can land with an error in the hash (e.g. expired link).
+  // Auth redirects can land with an error in the query or hash (e.g. expired link).
   const hash = location.hash.slice(1);
-  if (hash.includes('=')) {
-    const p = new URLSearchParams(hash);
-    if (p.get('error_description')) toast(p.get('error_description').replace(/\+/g, ' '), 6000);
+  const q = new URLSearchParams(location.search);
+  const hp = new URLSearchParams(hash.includes('=') ? hash : '');
+  const authErr = q.get('error_description') || hp.get('error_description');
+  if (authErr || q.has('code')) {
+    if (authErr) {
+      toast(authErr.replace(/\+/g, ' ') + (/expired|invalid/i.test(authErr) ? ' — request a new link.' : ''), 7000);
+      history.replaceState(null, '', location.pathname);
+    }
     show('settings');
-  } else show(hash || 'search');
+  } else show(hash.includes('=') ? 'settings' : hash || 'search');
 
   // Cloud sync (no-op unless configured in js/config.js).
   sync.onStatus(() => {
     collection.renderSync?.();
     if (active === 'settings') settings.render();
   });
-  sync.init({ onPasswordRecovery: () => { show('settings'); passwordSheet(); } });
+  sync.init({
+    onPasswordRecovery: () => { show('settings'); passwordSheet(); },
+    onAuthNotice: (m) => { show('settings'); toast(m, 6000); },
+  });
 }
 
 // Remember the Android/desktop install prompt so Settings can offer a button.

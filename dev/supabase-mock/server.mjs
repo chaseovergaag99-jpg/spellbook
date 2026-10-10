@@ -26,6 +26,9 @@ export const ANON_KEY = jwt({ role: 'anon', iss: 'supabase-mock', exp: 410244480
 
 const db = new pg.Pool({ connectionString: process.env.MOCK_DB || 'postgres://mockadmin:mockpass@localhost:5432/spellbook' });
 const refresh = new Map(); // refresh_token -> user id
+// Emails containing "+confirm" simulate projects with "Confirm email" ON:
+// sign-up returns no session and password sign-in fails until confirmed.
+const unconfirmed = new Set();
 
 const bin = process.argv[2] || './postgrest';
 fs.writeFileSync('/tmp/pgrst.conf', `db-uri = "postgres://authenticator:authpass@localhost:5432/spellbook"
@@ -72,13 +75,22 @@ http.createServer(async (req, res) => {
         const id = crypto.randomUUID();
         const r = await db.query('insert into auth.users (id,email,password) values ($1,$2,$3) on conflict (email) do nothing returning *', [id, body.email, body.password]);
         if (!r.rows.length) return send(res, 422, { code: 422, error_code: 'user_already_exists', msg: 'User already registered' });
+        if (body.email.includes('+confirm')) {
+          unconfirmed.add(body.email);
+          return send(res, 200, { id, aud: 'authenticated', role: '', email: body.email, identities: [{ id, provider: 'email' }], confirmation_sent_at: new Date().toISOString(), app_metadata: {}, user_metadata: {} });
+        }
         return send(res, 200, await session(r.rows[0]));
       }
       if (path === 'token' && url.searchParams.get('grant_type') === 'password') {
         const r = await db.query('select * from auth.users where email=$1 and password=$2', [body.email, body.password]);
         if (!r.rows.length) return send(res, 400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' });
+        if (unconfirmed.has(body.email)) return send(res, 400, { code: 400, error_code: 'email_not_confirmed', msg: 'Email not confirmed' });
         return send(res, 200, await session(r.rows[0]));
       }
+      if (path === 'token' && url.searchParams.get('grant_type') === 'pkce') {
+        return send(res, 404, { code: 404, error_code: 'flow_state_not_found', msg: 'invalid flow state, no valid flow state found' });
+      }
+      if (path === 'resend') return send(res, 200, {});
       if (path === 'token' && url.searchParams.get('grant_type') === 'refresh_token') {
         const id = refresh.get(body.refresh_token);
         const r = id && (await db.query('select * from auth.users where id=$1', [id]));

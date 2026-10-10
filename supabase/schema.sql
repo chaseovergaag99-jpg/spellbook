@@ -1,6 +1,7 @@
 -- =============================================================================
 -- Spellbook cloud sync schema for Supabase
--- Run once in Supabase → SQL Editor (safe to re-run).
+-- HOW TO RUN: Supabase dashboard → SQL Editor → New query → paste this whole
+-- file → Run. It is idempotent (safe to run again) and runs in one transaction.
 --
 -- Every row belongs to a user (user_id = auth.uid()). Row Level Security makes
 -- sure a signed-in user can only see and change their own rows; the anon key
@@ -11,6 +12,8 @@
 --   deleted     soft delete (tombstone) so deletions reach other devices
 --   synced_at   server time of the last write → incremental pull cursor
 -- =============================================================================
+
+begin;
 
 -- ---------- tables ----------
 create table if not exists public.collection_items (
@@ -100,6 +103,8 @@ create policy "own rows: delete" on public.decks for delete to authenticated usi
 -- ---------- privileges ----------
 revoke all on public.collection_items, public.decks from anon;
 grant select, insert, update, delete on public.collection_items, public.decks to authenticated;
+
+commit;
 
 -- Optional housekeeping (run manually or schedule with pg_cron):
 -- delete from public.collection_items where deleted and synced_at < now() - interval '180 days';

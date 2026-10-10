@@ -114,6 +114,31 @@ await C.page.waitForFunction(() => /Synced/.test(document.querySelector('#acct-s
 ok((await S(C.page)).collection.length === 0, 'C (other user): sees none of the first user\'s data (RLS)');
 await C.page.fill('#acct-email', 'x').catch(() => {});
 
+// ---------- "Confirm email" ON: graceful sign-up flow ----------
+const D = await device('D');
+const CEMAIL = `new+confirm${Date.now()}@test.dev`;
+const reqs = []; D.page.on('request', (r) => r.url().includes('/auth/v1/') && reqs.push(r.url()));
+await D.page.click('.tab[data-tab=settings]'); await D.page.click('#acct-mode');
+await D.page.fill('#acct-email', CEMAIL); await D.page.fill('#acct-pass', PASS); await D.page.click('#acct-submit');
+await D.page.waitForSelector('#acct-confirm', { timeout: 10000 });
+ok(/confirmation link/.test(await D.page.textContent('#acct-confirm')) && await D.page.locator('#acct-resend').isVisible(), 'D: sign-up with confirmation → "check your inbox" screen + resend button');
+const signupUrl = reqs.find((u) => u.includes('/signup'));
+ok(signupUrl && decodeURIComponent(signupUrl).includes('redirect_to=http://localhost:8080/'), 'D: emailRedirectTo is the current page URL');
+await D.page.evaluate(async () => { const s = await import('./js/store.js'); s.save(); }); await D.page.waitForTimeout(300);
+ok(await D.page.locator('#acct-confirm').isVisible(), 'D: confirm screen survives unrelated re-renders');
+await D.page.click('#acct-resend'); await D.page.waitForFunction(() => /sent again/.test(document.querySelector('#acct-msg').textContent));
+ok(true, 'D: resend confirmation works');
+await D.page.click('#acct-mode');
+await D.page.fill('#acct-email', CEMAIL); await D.page.fill('#acct-pass', PASS); await D.page.click('#acct-submit');
+await D.page.waitForFunction(() => /confirm your email/i.test(document.querySelector('#acct-msg').textContent));
+ok(true, 'D: signing in before confirming shows a friendly "confirm your email" message');
+await D.page.goto(BASE + '?code=stale-or-other-browser');
+await D.page.waitForFunction(() => /Email confirmed/.test(document.querySelector('#toast').textContent), null, { timeout: 10000 });
+ok(!location.search && !(await D.page.evaluate(() => location.search)), 'D: landing from a confirm link in another browser → "please sign in" notice, URL cleaned');
+await D.page.goto(BASE + '?error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired');
+await D.page.waitForFunction(() => /expired/.test(document.querySelector('#toast').textContent), null, { timeout: 10000 });
+ok(await D.page.evaluate(() => !location.search), 'D: expired-link error shown as a toast, URL cleaned');
+
 console.log(fails ? `\n${fails} FAILURE(S)` : '\nALL SYNC TESTS PASSED');
 await b.close();
 process.exit(fails ? 1 : 0);

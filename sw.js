@@ -8,7 +8,7 @@
  *  - Supabase (*.supabase.co) and any other cross-origin API: not intercepted.
  * Bump VERSION when you change shell files to force clients to update.
  */
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 const IMAGES = 'images-v1';

@@ -91,11 +91,44 @@ export function wirePanel(root, rerender) {
     busy(root.querySelector('#acct-submit'), async () => {
       if (mode === 'signup') {
         const r = await sync.signUp(email(), pw);
-        msg(r.needsConfirmation ? 'Check your email to confirm your account, then sign in.' : 'Account created!');
-      } else { await sync.signIn(email(), pw); toast('Signed in — syncing…'); }
+        if (r.status === 'signed-in') { toast('Account created — syncing…'); return; }
+        if (r.status === 'maybe-existing') { msg('If you already have an account with this email, sign in instead (or use "Forgot password?"). Otherwise check your inbox for a confirmation link.'); showResend(); return; }
+        confirmState(email());
+      } else {
+        try { await sync.signIn(email(), pw); toast('Signed in — syncing…'); }
+        catch (err) { if (err.code === 'email_not_confirmed') { msg(err.message, true); showResend(); return; } throw err; }
+      }
     });
   });
-  root.querySelector('#acct-mode')?.addEventListener('click', () => { mode = mode === 'signup' ? 'signin' : 'signup'; rerender(); });
+  // "Check your inbox" state after sign-up (email confirmation enabled).
+  const confirmState = (addr) => {
+    const box = root.querySelector('#acct');
+    box.querySelector('#acct-form').hidden = true;
+    box.querySelector('h3').textContent = 'Confirm your email';
+    msg('');
+    const info = document.createElement('div');
+    info.id = 'acct-confirm';
+    info.innerHTML = `<p class="small">📬 We sent a confirmation link to <b>${esc(addr)}</b>.</p>
+      <p class="small muted">Open it on this phone to finish creating your account — you'll come right back here, signed in.
+      If you open it somewhere else, just come back and sign in with your email and password.</p>`;
+    box.insertBefore(info, box.querySelector('#acct-form'));
+    const back = root.querySelector('#acct-mode'); back.textContent = 'Back to sign in';
+    showResend(addr);
+  };
+  const showResend = (addr) => {
+    if (root.querySelector('#acct-resend')) return;
+    const b = document.createElement('button');
+    b.className = 'btn small'; b.id = 'acct-resend'; b.textContent = 'Resend confirmation email';
+    b.onclick = () => busy(b, async () => {
+      const a = addr || email(); if (!a) throw new Error('Enter your email above first.');
+      await sync.resendConfirmation(a); msg('Confirmation email sent again. It can take a minute — check spam too.');
+    });
+    root.querySelector('#acct-msg').before(b);
+  };
+  root.querySelector('#acct-mode')?.addEventListener('click', () => {
+    mode = root.querySelector('#acct-confirm') ? 'signin' : mode === 'signup' ? 'signin' : 'signup';
+    rerender(true);
+  });
   root.querySelector('#acct-forgot')?.addEventListener('click', (e) => {
     if (!email()) return msg('Enter your email above first.', true);
     busy(e.currentTarget, async () => { await sync.resetPassword(email()); msg('Password reset email sent.'); });

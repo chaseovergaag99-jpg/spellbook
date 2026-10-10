@@ -28,8 +28,12 @@ export const getStatus = () => ({ ...status, user });
 export function onStatus(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 function setStatus(patch) { Object.assign(status, patch); listeners.forEach((f) => { try { f(getStatus()); } catch (e) { console.error(e); } }); }
 
-/** Public URL of the app (used for email links / OAuth redirects). */
-export const appUrl = () => new URL('./', location.href).href;
+/**
+ * Where email links / OAuth send the user back: the current page URL
+ * (without query or hash), e.g. https://user.github.io/spellbook/.
+ * It must be allowed under Supabase → Authentication → URL Configuration.
+ */
+export const appUrl = () => location.origin + location.pathname;
 
 function loadScript(src) {
   return new Promise((res, rej) => {
@@ -41,7 +45,7 @@ function loadScript(src) {
 }
 
 /** Initialise auth + sync. Safe to call when sync is disabled (no-op). */
-export async function init({ onPasswordRecovery } = {}) {
+export async function init({ onPasswordRecovery, onAuthNotice } = {}) {
   if (!enabled) return;
   try {
     await loadScript(new URL('vendor/supabase.js', document.baseURI).href);
@@ -59,8 +63,21 @@ export async function init({ onPasswordRecovery } = {}) {
     if (!user) { setStatus({ state: 'signed-out' }); return; }
     if (user.id !== prev) { setStatus({ state: 'idle' }); setTimeout(syncNow, 0); }
   });
+  // Finish any auth redirect (?code=… from confirm / magic-link / reset / OAuth).
+  const hadCode = new URLSearchParams(location.search).has('code');
+  const init = await sb.auth.initialize().catch((e) => ({ error: e }));
+  if (hadCode) {
+    // Clean the URL either way so a reload doesn't retry a used code.
+    history.replaceState(null, '', location.pathname + location.hash);
+    if (init?.error) {
+      // Typical case: the confirmation link was opened in a different browser/app
+      // than the one used to sign up. The email IS confirmed; they just sign in.
+      onAuthNotice?.('Email confirmed (or link already used). Please sign in with your email and password.');
+    }
+  }
   const { data } = await sb.auth.getSession();
   user = data.session?.user ?? null;
+  if (hadCode && user) onAuthNotice?.(`Signed in as ${user.email}`);
   setStatus({ state: user ? 'idle' : 'signed-out' });
   if (user) syncNow();
 
@@ -143,11 +160,32 @@ async function pullAll(table, cursor) {
 /* ---------------- auth actions (throw on error) ---------------- */
 function check({ data, error }) { if (error) throw error; return data; }
 
+/**
+ * Create an account. Returns:
+ *   { status: 'signed-in' }            confirmations off → session right away
+ *   { status: 'confirm-email' }        check inbox; link returns to appUrl()
+ *   { status: 'maybe-existing' }       Supabase hides whether the email is taken
+ *                                      (user with no identities) → suggest sign-in/reset
+ */
 export async function signUp(email, password) {
   const data = check(await sb.auth.signUp({ email, password, options: { emailRedirectTo: appUrl() } }));
-  return { needsConfirmation: !data.session };
+  if (data.session) return { status: 'signed-in' };
+  if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) return { status: 'maybe-existing' };
+  return { status: 'confirm-email' };
 }
-export async function signIn(email, password) { check(await sb.auth.signInWithPassword({ email, password })); }
+/** Sign in; errors carry code 'email_not_confirmed' when the inbox link wasn't clicked yet. */
+export async function signIn(email, password) {
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) {
+    if (error.code === 'email_not_confirmed' || /not confirmed/i.test(error.message)) {
+      const e = new Error('Please confirm your email first — check your inbox (and spam) for the link.'); e.code = 'email_not_confirmed'; throw e;
+    }
+    if (error.code === 'invalid_credentials' || /invalid login/i.test(error.message)) throw new Error('Wrong email or password.');
+    throw error;
+  }
+}
+/** Re-send the sign-up confirmation email. */
+export async function resendConfirmation(email) { check(await sb.auth.resend({ type: 'signup', email, options: { emailRedirectTo: appUrl() } })); }
 export async function magicLink(email) { check(await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: appUrl() } })); }
 export async function google() { check(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: appUrl() } })); }
 export async function resetPassword(email) { check(await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() })); }

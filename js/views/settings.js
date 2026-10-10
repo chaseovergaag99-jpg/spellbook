@@ -10,11 +10,13 @@ import * as sync from '../sync.js';
 let el;
 export function mount(root) { el = root; render(); }
 
-export function render() {
+export function render(force = false) {
   if (!el) return;
-  // Don't wipe a half-typed sign-in form when unrelated state changes re-render.
-  const typing = el.querySelector('#acct-form') && el.contains(document.activeElement) && /INPUT/.test(document.activeElement.tagName);
-  if (typing) return;
+  // Don't wipe a half-typed sign-in form or the "check your inbox" screen on unrelated re-renders.
+  if (!force && !sync.getUser()) {
+    const typing = el.querySelector('#acct-form') && el.contains(document.activeElement) && /INPUT/.test(document.activeElement.tagName);
+    if (typing || el.querySelector('#acct-confirm')) return;
+  }
   const { collection, decks, cards, meta } = store.state;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   el.innerHTML = `
